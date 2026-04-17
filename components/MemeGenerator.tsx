@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import Link from "next/link";
 import ImageUpload from "./ImageUpload";
 import MemeCanvas from "./MemeCanvas";
 import MemeControls from "./MemeControls";
+import MemeFeedback from "./MemeFeedback";
 import type { TextStyle } from "./MemeCanvas";
 import type { MemeCaption } from "@/lib/claude";
 
@@ -30,6 +32,8 @@ const MEME_STYLES = [
   { value: "wholesome", label: "🥺 Wholesomely Dank", desc: "Pure & unhinged" },
 ];
 
+type CaptionWithSession = MemeCaption & { sessionId?: string };
+
 export default function MemeGenerator() {
   const [imageData, setImageData] = useState<string>("");
   const [imageWidth, setImageWidth] = useState(800);
@@ -38,13 +42,15 @@ export default function MemeGenerator() {
   const [tweetContext, setTweetContext] = useState("");
   const [userPrompt, setUserPrompt] = useState("");
   const [memeStyle, setMemeStyle] = useState("dank");
-  const [captions, setCaptions] = useState<MemeCaption[]>([]);
+  const [captions, setCaptions] = useState<CaptionWithSession[]>([]);
   const [roast, setRoast] = useState<string | null>(null);
   const [selectedCaption, setSelectedCaption] = useState<number | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"create" | "style">("create");
+  const [fewShotCount, setFewShotCount] = useState(0);
+  const [feedbackGiven, setFeedbackGiven] = useState<Set<number>>(new Set());
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const handleImageLoad = useCallback((data: string, w: number, h: number) => {
@@ -54,6 +60,7 @@ export default function MemeGenerator() {
     setCaptions([]);
     setSelectedCaption(null);
     setRoast(null);
+    setFeedbackGiven(new Set());
   }, []);
 
   const handleStyleChange = useCallback((updates: Partial<TextStyle>) => {
@@ -61,7 +68,7 @@ export default function MemeGenerator() {
     setSelectedCaption(null);
   }, []);
 
-  const handleCaptionSelect = useCallback((idx: number, caption: MemeCaption) => {
+  const handleCaptionSelect = useCallback((idx: number, caption: CaptionWithSession) => {
     setSelectedCaption(idx);
     setTextStyle((prev) => ({
       ...prev,
@@ -79,6 +86,8 @@ export default function MemeGenerator() {
     setError(null);
     setCaptions([]);
     setRoast(null);
+    setSelectedCaption(null);
+    setFeedbackGiven(new Set());
 
     try {
       const res = await fetch("/api/generate-caption", {
@@ -98,10 +107,10 @@ export default function MemeGenerator() {
       }
 
       const data = await res.json();
-      setCaptions(data.captions || []);
-      setRoast(data.roast || null);
+      setCaptions(data.captions ?? []);
+      setRoast(data.roast ?? null);
+      setFewShotCount(data.fewShotCount ?? 0);
 
-      // Auto-select first caption
       if (data.captions?.length > 0) {
         handleCaptionSelect(0, data.captions[0]);
       }
@@ -137,9 +146,12 @@ export default function MemeGenerator() {
         ]);
       });
     } catch {
-      // Clipboard API not supported
+      // Clipboard API not supported in all browsers
     }
   }, []);
+
+  const selectedSessionId =
+    selectedCaption !== null ? captions[selectedCaption]?.sessionId : undefined;
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] noise-bg">
@@ -157,16 +169,24 @@ export default function MemeGenerator() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 text-xs text-[#444]">
-            <span className="w-2 h-2 rounded-full bg-[#39ff14] animate-pulse inline-block"></span>
-            powered by claude
+          <div className="flex items-center gap-3">
+            <Link
+              href="/stats"
+              className="px-3 py-1.5 rounded-lg text-xs font-bold bg-[#111] border border-[#1a1a1a] hover:border-[#39ff14] hover:text-[#39ff14] transition-all text-[#666]"
+            >
+              📊 AI Training Stats
+            </Link>
+            <div className="flex items-center gap-2 text-xs text-[#444]">
+              <span className="w-2 h-2 rounded-full bg-[#39ff14] animate-pulse inline-block"></span>
+              powered by claude
+            </div>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
         <div className="grid lg:grid-cols-2 gap-6">
-          {/* LEFT PANEL - Upload + Controls */}
+          {/* LEFT PANEL */}
           <div className="space-y-4">
             {/* Upload */}
             <div className="bg-[#111] rounded-2xl p-4 border border-[#1a1a1a]">
@@ -181,9 +201,16 @@ export default function MemeGenerator() {
 
             {/* AI Controls */}
             <div className="bg-[#111] rounded-2xl p-4 border border-[#1a1a1a]">
-              <h2 className="text-sm font-bold text-[#39ff14] uppercase tracking-wider mb-3 flex items-center gap-2">
-                <span>🤖</span> Step 2: AI Caption Generator
-              </h2>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-bold text-[#39ff14] uppercase tracking-wider flex items-center gap-2">
+                  <span>🤖</span> Step 2: AI Caption Generator
+                </h2>
+                {fewShotCount > 0 && (
+                  <span className="text-[10px] px-2 py-0.5 bg-[rgba(57,255,20,0.1)] border border-[rgba(57,255,20,0.3)] rounded-full text-[#39ff14]">
+                    🧠 +{fewShotCount} learned examples
+                  </span>
+                )}
+              </div>
 
               <div className="space-y-3">
                 <div>
@@ -193,7 +220,7 @@ export default function MemeGenerator() {
                   <textarea
                     value={tweetContext}
                     onChange={(e) => setTweetContext(e.target.value)}
-                    placeholder="paste the tweet text here... or describe what's happening in the image"
+                    placeholder="paste the tweet text here... or describe what's in the image"
                     rows={3}
                     className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-white text-sm placeholder-[#444] focus:outline-none focus:border-[#39ff14] transition-colors resize-none"
                   />
@@ -207,7 +234,7 @@ export default function MemeGenerator() {
                     type="text"
                     value={userPrompt}
                     onChange={(e) => setUserPrompt(e.target.value)}
-                    placeholder="e.g. 'make it about programming pain' or 'monday morning energy'"
+                    placeholder="e.g. 'programming pain' or 'monday morning energy'"
                     className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-white text-sm placeholder-[#444] focus:outline-none focus:border-[#39ff14] transition-colors"
                     onKeyDown={(e) => e.key === "Enter" && generateCaptions()}
                   />
@@ -286,6 +313,11 @@ export default function MemeGenerator() {
               <div className="bg-[#111] rounded-2xl p-4 border border-[#1a1a1a]">
                 <h3 className="text-sm font-bold text-[#39ff14] uppercase tracking-wider mb-3 flex items-center gap-2">
                   <span>✨</span> AI Generated Bangers ({captions.length})
+                  {fewShotCount > 0 && (
+                    <span className="text-[10px] text-[#555] font-normal ml-auto">
+                      trained on {fewShotCount} user-rated examples
+                    </span>
+                  )}
                 </h3>
                 <div className="space-y-2">
                   {captions.map((cap, idx) => (
@@ -298,19 +330,20 @@ export default function MemeGenerator() {
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex-1">
-                          <div className="text-white font-bold text-sm">
-                            {cap.topText}
-                          </div>
+                          <div className="text-white font-bold text-sm">{cap.topText}</div>
                           {cap.bottomText && (
-                            <div className="text-[#aaa] text-sm mt-0.5">
-                              {cap.bottomText}
-                            </div>
+                            <div className="text-[#aaa] text-sm mt-0.5">{cap.bottomText}</div>
                           )}
                           <div className="text-[10px] text-[#555] mt-1 uppercase tracking-wider">
                             {cap.vibe}
                           </div>
                         </div>
-                        <span className="text-2xl flex-shrink-0">{cap.emoji}</span>
+                        <div className="flex items-center gap-1">
+                          {feedbackGiven.has(idx) && (
+                            <span className="text-xs text-[#39ff14]">✓</span>
+                          )}
+                          <span className="text-2xl flex-shrink-0">{cap.emoji}</span>
+                        </div>
                       </div>
                     </button>
                   ))}
@@ -319,7 +352,7 @@ export default function MemeGenerator() {
             )}
           </div>
 
-          {/* RIGHT PANEL - Canvas + Style */}
+          {/* RIGHT PANEL */}
           <div className="space-y-4">
             {/* Canvas Preview */}
             <div className="bg-[#111] rounded-2xl p-4 border border-[#1a1a1a]">
@@ -343,7 +376,6 @@ export default function MemeGenerator() {
                 </div>
               )}
 
-              {/* Download Actions */}
               {imageData && (
                 <div className="flex gap-2 mt-3">
                   <button
@@ -364,6 +396,31 @@ export default function MemeGenerator() {
                 </div>
               )}
             </div>
+
+            {/* Feedback — shown when a caption is selected */}
+            {selectedSessionId && (
+              <div className="bg-[#111] rounded-2xl border border-[#1a1a1a] overflow-hidden">
+                <div className="px-4 pt-3 pb-0">
+                  <h2 className="text-sm font-bold text-[#39ff14] uppercase tracking-wider flex items-center gap-2">
+                    <span>📊</span> Step 4: Rate & Train the AI
+                  </h2>
+                  <p className="text-[10px] text-[#444] mt-0.5 mb-3">
+                    Your rating + tags get stored and used as few-shot examples to improve future generations
+                  </p>
+                </div>
+                <div className="p-4 pt-0">
+                  <MemeFeedback
+                    key={selectedSessionId}
+                    sessionId={selectedSessionId}
+                    onFeedbackSubmitted={(rating) => {
+                      if (selectedCaption !== null) {
+                        setFeedbackGiven((prev) => new Set([...prev, selectedCaption]));
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Style Controls */}
             {imageData && (
@@ -391,10 +448,13 @@ export default function MemeGenerator() {
           </div>
         </div>
 
-        {/* Footer */}
-        <footer className="mt-12 text-center text-[#333] text-xs pb-6">
+        <footer className="mt-12 text-center text-[#333] text-xs pb-6 space-y-1">
           <p>made with 🐸 and questionable AI judgment</p>
-          <p className="mt-1">no memes were harmed in the making of this app</p>
+          <p>
+            <Link href="/stats" className="text-[#444] hover:text-[#39ff14] transition-colors underline">
+              view AI training dashboard →
+            </Link>
+          </p>
         </footer>
       </main>
     </div>

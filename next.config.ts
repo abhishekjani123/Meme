@@ -1,9 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  experimental: {
-    serverComponentsExternalPackages: ["sharp"],
-  },
+  serverExternalPackages: ["better-sqlite3", "sharp"],
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "**" },
